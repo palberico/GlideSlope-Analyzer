@@ -96,13 +96,34 @@
   .fl-meta b{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .fl-meta span{color:var(--faint);font-size:11.5px;margin-top:2px}
   .fl-empty{color:var(--muted);font-size:12.5px;padding:6px 0}
+
+  .modal-backdrop{position:fixed;inset:0;background:rgba(5,8,12,.72);
+    display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+  .modal-backdrop.hidden{display:none}
+  .modal-close{position:absolute;top:8px;right:10px;background:none;border:none;
+    color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:4px}
+
+  .authgate{position:relative;background:var(--panel);border:1px solid var(--hair);border-radius:10px;
+    padding:22px 24px;max-width:340px;width:100%}
+  .authgate h3{margin:0 0 4px;font-size:14px;font-weight:600}
+  .authgate .note{color:var(--muted);font-size:12.5px;margin:0 0 16px}
+  .authgate .btn{width:100%;justify-content:center}
+  .authdivider{display:flex;align-items:center;gap:10px;color:var(--faint);
+    font-size:11px;text-transform:uppercase;letter-spacing:.1em;margin:16px 0}
+  .authdivider::before,.authdivider::after{content:"";flex:1;height:1px;background:var(--hair)}
+  .authinput{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--hair);
+    border-radius:6px;padding:9px 11px;font-size:13px;font-family:inherit;margin-bottom:8px;box-sizing:border-box}
+  .authinput:focus{outline:2px solid var(--track);outline-offset:1px}
+  .authrow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:4px}
+  .authtoggle{color:var(--track);font-size:12px;cursor:pointer;background:none;border:none;
+    font-family:inherit;padding:0}
+  .authgate .err{color:var(--low);font-size:12.5px;margin-top:10px}
+  .authgate .cfgwarn{color:var(--high);font-size:12px;margin-top:10px;display:block}
 </style>
 </head>
 <body>
 <div class="userbar" id="userBar">
   <span class="who mono" id="userEmail"></span>
-  <span class="cfgwarn" id="cfgWarn" style="display:none">Firebase not configured — see README, then reload</span>
-  <button class="btn" id="signInBtn">Sign in with Google</button>
   <button class="ghost" id="signOutBtn" style="display:none">Sign out</button>
 </div>
 <div class="wrap">
@@ -120,7 +141,7 @@
     <div id="flightList"></div>
   </section>
 
-  <section id="dropView">
+  <section id="dropView" class="hidden">
     <div class="drop" id="drop">
       <h2>Drop a flight log</h2>
       <p>Drag a <span class="mono">glideslope_*.csv</span> here, or <span class="browse" id="browse">browse</span>.</p>
@@ -193,6 +214,25 @@
       </div>
     </div>
   </section>
+</div>
+
+<div class="modal-backdrop" id="authModal">
+  <div class="authgate">
+    <h3>Sign in to continue</h3>
+    <p class="note">Sign in to use the analyzer and save flights.</p>
+    <button class="btn" id="googleBtn" type="button">Continue with Google</button>
+    <div class="authdivider">or</div>
+    <form id="emailForm">
+      <input class="authinput mono" type="email" id="authEmail" placeholder="email" autocomplete="email" required>
+      <input class="authinput mono" type="password" id="authPassword" placeholder="password" autocomplete="current-password" required>
+      <div class="authrow">
+        <button class="btn ghost" type="submit" id="emailSubmitBtn">Sign in</button>
+        <button class="authtoggle" type="button" id="authToggle">Need an account? Create one</button>
+      </div>
+    </form>
+    <div class="err hidden" id="authErr"></div>
+    <div class="cfgwarn hidden" id="cfgWarn">Firebase not configured — see README, then reload</div>
+  </div>
 </div>
 
 <script>
@@ -607,84 +647,62 @@ $('#resetBtn').addEventListener('click',()=>{
 window.addEventListener('resize',()=>{ if(CURRENT)renderSeg(CURRENT); });
 </script>
 <script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
-    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-  import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy, serverTimestamp }
+  import {
+    auth, db, configured, GoogleAuthProvider, signInWithPopup,
+    signInWithEmailAndPassword, createUserWithEmailAndPassword,
+    signOut, onAuthStateChanged, friendlyAuthError
+  } from "./auth.js";
+  import { collection, addDoc, getDocs, deleteDoc, doc, query, orderBy, serverTimestamp }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
   const $id = s => document.getElementById(s);
-
-  async function loadFirebaseConfigFromEnv(){
-    const candidates = ['./secrets/.env', '/secrets/.env', '/.env'];
-    for (const candidate of candidates) {
-      try {
-        const response = await fetch(candidate, { cache: 'no-store' });
-        if (!response.ok) continue;
-        const text = await response.text();
-        const values = {};
-        for (const rawLine of text.split(/\r?\n/)) {
-          const line = rawLine.trim();
-          if (!line || line.startsWith('#')) continue;
-          const separator = line.indexOf('=');
-          if (separator === -1) continue;
-          const key = line.slice(0, separator).trim();
-          const value = line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, '');
-          values[key] = value;
-        }
-        return {
-          apiKey: values.FIREBASE_API_KEY || '',
-          authDomain: values.FIREBASE_AUTH_DOMAIN || '',
-          projectId: values.FIREBASE_PROJECT_ID || '',
-          storageBucket: values.FIREBASE_STORAGE_BUCKET || '',
-          messagingSenderId: values.FIREBASE_MESSAGING_SENDER_ID || '',
-          appId: values.FIREBASE_APP_ID || '',
-          measurementId: values.FIREBASE_MEASUREMENT_ID || ''
-        };
-      } catch (e) {
-        // keep trying the next candidate
-      }
-    }
-    return null;
-  }
-
-  // ===================================================================
-  //  Firebase config is loaded from secrets/.env when the page is served
-  //  from a local web server (for example via python3 -m http.server).
-  // ===================================================================
-  const firebaseConfig = (await loadFirebaseConfigFromEnv()) || {
-    apiKey: '',
-    authDomain: '',
-    projectId: '',
-    storageBucket: '',
-    messagingSenderId: '',
-    appId: ''
-  };
-  // ===================================================================
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-  let auth=null, db=null, user=null;
-  const configured = firebaseConfig.apiKey && firebaseConfig.projectId;
+  let user=null, mode='signin';
+
+  function showAuthErr(msg){
+    const el = $id('authErr'); el.textContent = msg; el.classList.remove('hidden');
+  }
+
+  $id('emailForm').addEventListener('submit', e => e.preventDefault());
 
   if(!configured){
-    $id('cfgWarn').style.display='inline';
-    $id('signInBtn').disabled=true;
+    $id('cfgWarn').classList.remove('hidden');
+    $id('googleBtn').disabled = true;
   } else {
-    const app = initializeApp(firebaseConfig);
-    auth = getAuth(app); db = getFirestore(app);
     const provider = new GoogleAuthProvider();
 
-    $id('signInBtn').onclick = () => signInWithPopup(auth, provider).catch(e=>alert(e.message));
+    $id('googleBtn').onclick = () =>
+      signInWithPopup(auth, provider).catch(e => showAuthErr(friendlyAuthError(e)));
+
+    $id('authToggle').onclick = () => {
+      mode = mode === 'signin' ? 'signup' : 'signin';
+      $id('emailSubmitBtn').textContent = mode === 'signin' ? 'Sign in' : 'Create account';
+      $id('authToggle').textContent = mode === 'signin' ? 'Need an account? Create one' : 'Have an account? Sign in';
+    };
+
+    $id('emailForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = $id('authEmail').value.trim();
+      const password = $id('authPassword').value;
+      try{
+        if(mode === 'signin') await signInWithEmailAndPassword(auth, email, password);
+        else await createUserWithEmailAndPassword(auth, email, password);
+      }catch(err){ showAuthErr(friendlyAuthError(err)); }
+    });
+
     $id('signOutBtn').onclick = () => signOut(auth);
 
     onAuthStateChanged(auth, u => {
       user = u;
-      $id('signInBtn').style.display  = u ? 'none' : 'inline-block';
       $id('signOutBtn').style.display = u ? 'inline-block' : 'none';
       $id('userEmail').textContent = u ? (u.email || u.displayName || '') : '';
+      $id('authModal').classList.toggle('hidden', !!u);
+      $id('dropView').classList.toggle('hidden', !u);
       $id('flightsView').classList.toggle('hidden', !u);
       $id('saveBtn').style.display = u ? 'inline-block' : 'none';
-      if(u) refreshFlights();
+      if(!u) $id('dataView').classList.add('hidden');
+      if(u){ $id('authErr').classList.add('hidden'); refreshFlights(); }
     });
   }
 

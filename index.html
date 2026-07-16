@@ -11,6 +11,7 @@
     --course:#E255A1; --track:#46C6E0; --high:#F2A93B; --low:#E5687A; --on:#5FD08A;
   }
   *{box-sizing:border-box}
+  .hidden{display:none}
   html,body{margin:0;background:var(--bg);color:var(--text);
     font-family:ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     -webkit-font-smoothing:antialiased}
@@ -35,6 +36,32 @@
   .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--hair)}
   .btn small{opacity:.75;font-weight:400}
 
+  .who{color:var(--muted);font-size:12.5px}
+  .signout{color:var(--muted);font-size:12px;cursor:pointer;text-decoration:underline;margin-left:10px}
+
+  .modal-backdrop{position:fixed;inset:0;background:rgba(5,8,12,.72);
+    display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+  .modal-backdrop.hidden{display:none}
+  .modal-close{position:absolute;top:8px;right:10px;background:none;border:none;
+    color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:4px}
+
+  .authgate{position:relative;background:var(--panel);border:1px solid var(--hair);border-radius:10px;
+    padding:22px 24px;max-width:340px;width:100%}
+  .authgate h3{margin:0 0 4px;font-size:14px;font-weight:600}
+  .authgate .note{color:var(--muted);font-size:12.5px;margin:0 0 16px}
+  .authgate .btn{width:100%;justify-content:center}
+  .authdivider{display:flex;align-items:center;gap:10px;color:var(--faint);
+    font-size:11px;text-transform:uppercase;letter-spacing:.1em;margin:16px 0}
+  .authdivider::before,.authdivider::after{content:"";flex:1;height:1px;background:var(--hair)}
+  .authinput{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--hair);
+    border-radius:6px;padding:9px 11px;font-size:13px;font-family:inherit;margin-bottom:8px;box-sizing:border-box}
+  .authinput:focus{outline:2px solid var(--track);outline-offset:1px}
+  .authrow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:4px}
+  .authtoggle{color:var(--track);font-size:12px;cursor:pointer;background:none;border:none;
+    font-family:inherit;padding:0}
+  .authgate .err{color:var(--low);font-size:12.5px;margin-top:10px}
+  .authgate .cfgwarn{color:var(--high);font-size:12px;margin-top:10px}
+
   .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:36px}
   .step{background:var(--panel);border:1px solid var(--hair);border-radius:10px;padding:18px 18px 16px}
   .step .n{color:var(--track);font-size:11px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:8px}
@@ -55,6 +82,9 @@
   <header class="top">
     <h1>Approach&nbsp;Review</h1>
     <span class="sub">Glideslope&nbsp;Toolkit</span>
+    <span class="spacer" style="flex:1"></span>
+    <span class="who mono" id="userEmail"></span>
+    <span class="signout hidden" id="signOutBtn">Sign out</span>
   </header>
 
   <section class="hero">
@@ -62,11 +92,12 @@
     <p>An EdgeTX Lua script that shows live ILS-style needles and logs every approach to your SD
       card, paired with a browser analyzer that turns those logs into flight profiles,
       localizer tracks, and a replay of the CDI.</p>
+
     <div class="cta">
-      <a class="btn" href="glideslope.lua" download>
+      <a class="btn" href="glideslope.lua" download id="downloadBtn">
         Download glideslope.lua <small>EdgeTX Tools script</small>
       </a>
-      <a class="btn ghost" href="analyzer.html">Open the Analyzer</a>
+      <a class="btn ghost" href="analyzer.html" id="analyzerBtn">Open the Analyzer</a>
     </div>
   </section>
 
@@ -111,5 +142,108 @@
     Everything runs client-side. Logs stay on your device unless you sign in and choose to save one.
   </footer>
 </div>
+
+<div class="modal-backdrop hidden" id="authModal">
+  <div class="authgate">
+    <button class="modal-close" id="authModalClose" type="button" aria-label="Close">&times;</button>
+    <h3>Sign in to continue</h3>
+    <p class="note">Sign in to download the script and open the analyzer.</p>
+    <button class="btn" id="googleBtn" type="button">Continue with Google</button>
+    <div class="authdivider">or</div>
+    <form id="emailForm">
+      <input class="authinput mono" type="email" id="authEmail" placeholder="email" autocomplete="email" required>
+      <input class="authinput mono" type="password" id="authPassword" placeholder="password" autocomplete="current-password" required>
+      <div class="authrow">
+        <button class="btn ghost" type="submit" id="emailSubmitBtn">Sign in</button>
+        <button class="authtoggle" type="button" id="authToggle">Need an account? Create one</button>
+      </div>
+    </form>
+    <div class="err hidden" id="authErr"></div>
+    <div class="cfgwarn hidden" id="cfgWarn">Firebase not configured — see README, then reload</div>
+  </div>
+</div>
+
+<script type="module">
+  import {
+    auth, configured, GoogleAuthProvider, signInWithPopup,
+    signInWithEmailAndPassword, createUserWithEmailAndPassword,
+    signOut, onAuthStateChanged, friendlyAuthError
+  } from "./auth.js";
+
+  const $id = s => document.getElementById(s);
+  let mode = 'signin'; // or 'signup'
+  let authed = false;
+  let pendingAction = null; // 'download' | 'analyzer'
+
+  function openModal(action){
+    pendingAction = action || null;
+    $id('authErr').classList.add('hidden');
+    $id('authModal').classList.remove('hidden');
+  }
+  function closeModal(){
+    pendingAction = null;
+    $id('authModal').classList.add('hidden');
+  }
+
+  $id('downloadBtn').addEventListener('click', e => {
+    if(!authed){ e.preventDefault(); openModal('download'); }
+  });
+  $id('analyzerBtn').addEventListener('click', e => {
+    if(!authed){ e.preventDefault(); openModal('analyzer'); }
+  });
+  $id('authModalClose').addEventListener('click', closeModal);
+  $id('authModal').addEventListener('click', e => { if(e.target.id === 'authModal') closeModal(); });
+  window.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && !$id('authModal').classList.contains('hidden')) closeModal();
+  });
+
+  $id('emailForm').addEventListener('submit', e => e.preventDefault());
+
+  if(!configured){
+    $id('cfgWarn').classList.remove('hidden');
+    $id('googleBtn').disabled = true;
+  } else {
+    const provider = new GoogleAuthProvider();
+
+    $id('googleBtn').onclick = () =>
+      signInWithPopup(auth, provider).catch(e => showAuthErr(friendlyAuthError(e)));
+
+    $id('authToggle').onclick = () => {
+      mode = mode === 'signin' ? 'signup' : 'signin';
+      $id('emailSubmitBtn').textContent = mode === 'signin' ? 'Sign in' : 'Create account';
+      $id('authToggle').textContent = mode === 'signin' ? 'Need an account? Create one' : 'Have an account? Sign in';
+    };
+
+    $id('emailForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = $id('authEmail').value.trim();
+      const password = $id('authPassword').value;
+      try{
+        if(mode === 'signin') await signInWithEmailAndPassword(auth, email, password);
+        else await createUserWithEmailAndPassword(auth, email, password);
+      }catch(err){ showAuthErr(friendlyAuthError(err)); }
+    });
+
+    $id('signOutBtn').onclick = () => signOut(auth);
+
+    onAuthStateChanged(auth, u => {
+      authed = !!u;
+      $id('signOutBtn').classList.toggle('hidden', !u);
+      $id('userEmail').textContent = u ? (u.email || '') : '';
+      if(u){
+        const action = pendingAction;
+        closeModal();
+        if(action === 'download') $id('downloadBtn').click();
+        else if(action === 'analyzer') $id('analyzerBtn').click();
+      }
+    });
+  }
+
+  function showAuthErr(msg){
+    const el = $id('authErr');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+</script>
 </body>
 </html>
