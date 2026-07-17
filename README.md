@@ -1,17 +1,23 @@
-# Approach Review — cloud setup
+# Approach Review
 
-`index.html` is the home/landing page — download `glideslope.lua` and jump to the analyzer.
-`analyzer.html` is the analyzer with Google sign-in + save-your-flights (Firebase).
-`glideslope.lua` is the EdgeTX Tools script that flies the ILS needles and logs the approach.
+`app/` is the React app — the home/landing page and the flight-log analyzer
+(Google/email sign-in + save-your-flights via Firebase), routed as `/` and
+`/#/analyzer`. See `app/README.md` for that app's dev/deploy details, and
+`docs/superpowers/specs/2026-07-16-react-migration-design.md` for the
+migration design.
+
+`glideslope.lua` is the EdgeTX Tools script that flies the ILS needles and
+logs the approach — it's also copied into `app/public/` so the web app can
+serve it for download.
 
 ## One-time Firebase setup (~10 minutes)
 
 1. **Create a project** at https://console.firebase.google.com → *Add project*.
 2. **Register a Web app**: Project Overview → the `</>` (Web) icon → give it a nickname.
    Firebase shows you a `firebaseConfig = { ... }` block. Copy it.
-3. **Set the config**: copy the values into `secrets/.env` as `FIREBASE_API_KEY=`,
-   `FIREBASE_AUTH_DOMAIN=`, etc. (see `secrets/README.md`). `analyzer.html` fetches
-   this file at load time — it is never committed to git.
+3. **Set the config**: copy the values into `app/.env.local` as `VITE_FIREBASE_API_KEY=`,
+   `VITE_FIREBASE_AUTH_DOMAIN=`, etc. — see `app/.env.local.example` for the full list
+   and `app/README.md` for how the app reads them. This file is gitignored.
 4. **Enable sign-in**: Build → Authentication → Get started → Sign-in method →
    enable **Google** → Save.
 5. **Create the database**: Build → Firestore Database → Create database →
@@ -22,12 +28,12 @@
 
 Google sign-in needs a real http(s) origin — it will **not** work from `file://`.
 
-- **Quick local test:** in this folder run `python3 -m http.server 5000`
-  then open `http://localhost:5000/` (localhost is pre-authorized for Auth).
-- **Publish it:** install the Firebase CLI (`npm i -g firebase-tools`),
-  `firebase login`, `firebase init hosting` (public dir = this folder,
-  single-page = no), then `firebase deploy`. Add your deployed domain under
-  Authentication → Settings → Authorized domains if prompted.
+- **Local dev:** from this folder, `npm install` then `npm run dev`
+  (delegates into `app/`; `localhost` is pre-authorized for Auth).
+- **Deploy:** pushing to `main` runs `.github/workflows/deploy.yml`, which
+  builds `app/` and publishes it to GitHub Pages. Firebase config is injected
+  from repo secrets at build time — see `app/README.md`. Add your GitHub
+  Pages domain under Authentication → Settings → Authorized domains.
 
 ## How it stores flights
 
