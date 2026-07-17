@@ -83,8 +83,8 @@ export function Landing() {
           <div className="n">02 — Fly</div>
           <h3>Launch and log</h3>
           <p>
-            Stand at your launch/landing spot, open the tool from SYS → Tools. Climb-out into
-            wind locks the heading; flip the SD switch down on final for live ILS needles.
+            Open the tool from SYS → Tools, choose automatic or manual heading, then launch into
+            wind. Flip the SD switch down on final for live ILS needles.
           </p>
         </div>
         <div className="step">
@@ -101,20 +101,28 @@ export function Landing() {
         <h3>Field sequence</h3>
         <p>1. Radio on, battery in, wait for sats. Arm.</p>
         <p>
-          2. Standing at your launch/landing spot: <code>SYS → Tools → glideslope</code>. Confirm
-          "LOG" is climbing.
+          2. Open <code>SYS → Tools → glideslope</code>. Choose automatic or manual heading —
+          manual: dial in your runway heading, ENTER to confirm.
         </p>
-        <p>3. Launch into wind (SD switch up). Climb-out auto-locks heading.</p>
-        <p>4. Fly. On final, flip SD switch down for ILS needles. Center them, land.</p>
-        <p>5. RTN → read the save confirmation → RTN. Disarm separately.</p>
+        <p>
+          3. Standing at your launch/landing spot, confirm "LOG" is climbing (home is captured
+          automatically off the first GPS fix either way).
+        </p>
+        <p>
+          4. Launch into wind (SD switch up). Automatic: climb-out locks heading. Manual: already
+          set, nothing to wait for.
+        </p>
+        <p>5. Fly. On final, flip SD switch down for ILS needles. Center them, land.</p>
+        <p>6. RTN → read the save confirmation → RTN. Disarm separately.</p>
       </div>
 
       <div className="card card--info">
         <h3>Bench test mode</h3>
         <p>
-          No groundspeed needed. Press ENTER (roller click) to lock heading to the plane's
-          current direction and show the ILS immediately — "TEST" appears on screen. Physically
-          move the plane to watch the needles swing. Press ENTER again to re-grab heading.
+          Automatic mode only. No groundspeed needed. Press ENTER (roller click) to lock heading
+          to the plane's current direction and show the ILS immediately — "TEST" appears on
+          screen. Physically move the plane to watch the needles swing. Press ENTER again to
+          re-grab heading.
         </p>
       </div>
 

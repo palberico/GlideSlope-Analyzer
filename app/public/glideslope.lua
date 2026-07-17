@@ -1,41 +1,61 @@
--- Glide Slope Indicator v3.3  (EdgeTX Tools script) -- CDI + LOGGING + TEST MODE
+-- Glide Slope Indicator v3.4  (EdgeTX Tools script) -- CDI + LOGGING + TEST MODE
 -- Home is captured AUTOMATICALLY when you open the tool (stand at your
--- launch/landing spot). In flight, heading locks during into-wind climb-out
--- and the SD switch DOWN shows the ILS needles.
+-- launch/landing spot). Choose AUTOMATIC or MANUAL heading on the setup
+-- screen before flying:
+--   AUTOMATIC locks heading from GPS during into-wind climb-out -- best for
+--   wheeled takeoffs where groundspeed ramps up smoothly down a runway.
+--   MANUAL lets you dial in the runway/launch heading yourself (0-355 deg,
+--   5 deg steps) -- use this for hand launches, where a hard throw can spike
+--   groundspeed past the auto-lock threshold before GPS course has settled,
+--   locking onto noise from the throw instead of the real flight path.
+-- In flight, the SD switch DOWN shows the ILS needles.
 --
--- BENCH TEST MODE: press ENTER (roller click) to lock heading to the plane's
--- CURRENT direction and show the ILS right away -- no groundspeed needed.
--- Then physically move/walk the plane to watch the needles swing. "TEST" shows
--- on screen. Press ENTER again to re-grab the current heading.
+-- BENCH TEST MODE (automatic heading only): press ENTER (roller click) to
+-- lock heading to the plane's CURRENT direction and show the ILS right away
+-- -- no groundspeed needed. Then physically move/walk the plane to watch the
+-- needles swing. "TEST" shows on screen. Press ENTER again to re-grab the
+-- current heading.
 --
 -- SAVE PROTECTION: writes to /LOGS/ or the SD ROOT if that folder is missing;
 -- "LOG <rows>" climbs live; RTN shows a verified LOG SAVED / SAVE FAILED box.
 --
 -- FIELD SEQUENCE (hand launch, belly land, into wind):
 --   1. Radio on, battery in, wait for sats. Arm.
---   2. Standing at your launch/landing spot: SYS -> Tools -> glideslope.
---      Tool grabs that spot as home + baro datum. Confirm "LOG" climbing.
---   3. Launch into wind (SD up). Climb-out auto-locks heading (beep).
+--   2. Open SYS -> Tools -> glideslope. Choose AUTOMATIC or MANUAL heading
+--      (MANUAL: dial in your launch heading, ENTER to confirm). Standing at
+--      your launch/landing spot, the tool grabs that spot as home + baro
+--      datum. Confirm "LOG" climbing.
+--   3. Launch into wind (SD up). AUTOMATIC: climb-out auto-locks heading
+--      (beep). MANUAL: heading is already set, nothing to wait for.
 --   4. Fly. On final flip SD DOWN -> ILS needles. Center them, land.
 --   5. RTN -> read the save box -> RTN. Disarm (separate).
 --
 -- Sensors: GPS, Alt = BARO (rename GPS-group Alt to GAlt), Hdg, GSpd + more.
 
-local DEFAULT_DEG = 3.0
-local ILS_SW      = "sd"
-local ILS_DOWN    = true
-local MOVE_KMH    = 10
-local GV_INDEX    = 8
-local LAT_FS      = 40
-local VERT_FS     = 20
-local DEG2M       = 111320.0
-local LOG_MS      = 100
+local DEFAULT_DEG      = 3.0
+local ILS_SW           = "sd"
+local ILS_DOWN         = true
+local MOVE_KMH         = 10
+local MOVE_DEBOUNCE_MS = 400   -- GSpd must stay above MOVE_KMH this long before auto-lock
+local HEADING_STEP     = 5     -- degrees per wheel click in manual mode
+local GV_INDEX         = 8
+local LAT_FS           = 40
+local VERT_FS          = 20
+local DEG2M            = 111320.0
+local LOG_MS           = 100
+local HEADING_FILE     = "/SCRIPTS/TOOLS/glideslope_heading.txt"
+local COMPASS          = {"N","NE","E","SE","S","SW","W","NW"}
 
 local slope = DEFAULT_DEG
 local homeSet, headingSet, testMode = false, false, false
 local thLat, thLon, thAlt, thHdgRad = 0,0,0,0
 
-local state = "run"
+local flightMode = "auto"       -- "auto" or "manual", chosen on the setup screen
+local manualHeadingDeg = 0
+local moveAboveSinceMs = nil    -- debounce timer for automatic heading lock
+local hdgSamples = {}           -- Hdg readings collected during the debounce window
+
+local state = "mode"            -- "mode" -> ["heading"] -> "run" -> "done"
 local path, writeOK, savedOK = nil, false, false
 local rows, buffer, lastFlush, lastLog = 0, "", 0, 0
 
@@ -47,7 +67,7 @@ local function clamp(v, lo, hi)
 end
 
 local function ilsVisible()
-  local v = getValue(ILS_SW)
+  local v = getValue(ILS_SW) or 0
   if ILS_DOWN then return v > 0 else return v < 0 end
 end
 
@@ -57,6 +77,34 @@ local function loadSlope()
 end
 local function saveSlope()
   pcall(model.setGlobalVariable, GV_INDEX, 0, math.floor(slope * 10 + 0.5))
+end
+
+-- Manual heading persists in its own file on the SD card (not a model global
+-- variable) so it can never collide with global variables you already use
+-- for mixing -- failure to read/write it is silently harmless, it just
+-- means the manual heading resets to 0 (North) next time.
+local function loadManualHeading()
+  local ok, fh = pcall(io.open, HEADING_FILE, "r")
+  if ok and fh then
+    local ok2, line = pcall(io.read, fh, 10)
+    pcall(io.close, fh)
+    if ok2 and line then
+      local n = tonumber(line)
+      if n then manualHeadingDeg = math.floor(n + 0.5) % 360 end
+    end
+  end
+end
+local function saveManualHeading()
+  local ok, fh = pcall(io.open, HEADING_FILE, "w")
+  if ok and fh then
+    pcall(io.write, fh, tostring(manualHeadingDeg))
+    pcall(io.close, fh)
+  end
+end
+
+local function compassLabel(deg)
+  local idx = math.floor((deg / 45) + 0.5) % 8 + 1
+  return COMPASS[idx]
 end
 
 local function getGPS()
@@ -72,8 +120,37 @@ local function fmtn(name)
   return tostring(v)
 end
 
-local function lockHeading()
-  thHdgRad = rad(getValue("Hdg") or 0)
+-- Portable two-argument atan2, built from single-argument math.atan (present
+-- in every Lua dialect) rather than depending on math.atan2 or a two-arg
+-- math.atan overload -- either could be missing depending on the Lua version
+-- EdgeTX's interpreter implements.
+local function atan2(y, x)
+  if x > 0 then return math.atan(y / x)
+  elseif x < 0 and y >= 0 then return math.atan(y / x) + math.pi
+  elseif x < 0 and y < 0 then return math.atan(y / x) - math.pi
+  elseif x == 0 and y > 0 then return math.pi / 2
+  elseif x == 0 and y < 0 then return -math.pi / 2
+  else return 0 end
+end
+
+-- Locks the centerline heading. In automatic mode, `samples` is the list of
+-- Hdg readings collected while GSpd was confirmed above MOVE_KMH for
+-- MOVE_DEBOUNCE_MS -- averaged with a circular mean (not a plain arithmetic
+-- mean, which breaks near the 0/360 wrap) so a single noisy reading right at
+-- the GSpd threshold crossing -- e.g. the instant of a hard hand-launch
+-- throw -- can't skew the locked heading on its own.
+local function lockHeading(samples)
+  if samples and #samples > 0 then
+    local sx, sy = 0, 0
+    for _, hd in ipairs(samples) do
+      local r = rad(hd)
+      sx = sx + math.cos(r)
+      sy = sy + math.sin(r)
+    end
+    thHdgRad = atan2(sy, sx)
+  else
+    thHdgRad = rad(getValue("Hdg") or 0)
+  end
   headingSet = true
 end
 
@@ -156,6 +233,31 @@ local function drawConfirm()
   lcd.drawText(20, 160, "Press RTN / ENTER to exit", SMLSIZE + WHITE)
 end
 
+local function drawModeSelect()
+  lcd.clear(BLACK)
+  lcd.drawText(20, 15, "GLIDESLOPE SETUP", DBLSIZE + WHITE)
+  lcd.drawText(20, 60, "Flight path heading:", MIDSIZE + WHITE)
+  local autoMark = (flightMode == "auto") and "> " or "  "
+  local manMark  = (flightMode == "manual") and "> " or "  "
+  lcd.drawText(30, 95,  autoMark .. "AUTOMATIC", MIDSIZE + (flightMode == "auto" and GREEN or WHITE))
+  lcd.drawText(30, 125, manMark .. "MANUAL", MIDSIZE + (flightMode == "manual" and GREEN or WHITE))
+  lcd.drawText(20, 165, "Automatic: locks heading from GPS", SMLSIZE + WHITE)
+  lcd.drawText(20, 183, "during into-wind climb-out.", SMLSIZE + WHITE)
+  lcd.drawText(20, 205, "Manual: you set the runway heading --", SMLSIZE + WHITE)
+  lcd.drawText(20, 223, "use this for hand launches.", SMLSIZE + WHITE)
+  lcd.drawText(20, 250, "wheel=select   ENT=confirm   RTN=exit", SMLSIZE + WHITE)
+end
+
+local function drawHeadingSelect()
+  lcd.clear(BLACK)
+  lcd.drawText(20, 15, "SET RUNWAY HEADING", DBLSIZE + WHITE)
+  lcd.drawText(60, 80, string.format("%03d", manualHeadingDeg), DBLSIZE + GREEN)
+  lcd.drawText(170, 90, compassLabel(manualHeadingDeg), MIDSIZE + WHITE)
+  lcd.drawText(20, 150, "Direction you fly AWAY from home", SMLSIZE + WHITE)
+  lcd.drawText(20, 168, "on climb-out (into wind).", SMLSIZE + WHITE)
+  lcd.drawText(20, 250, "wheel=adjust  ENT=confirm  RTN=back", SMLSIZE + WHITE)
+end
+
 local function init()
   loadSlope()
   pcall(function() return model.getInfo().name end)
@@ -170,24 +272,11 @@ local function run(event)
     drawConfirm()
     return 0
   end
-  if event == EVT_VIRTUAL_EXIT then
-    flush()
-    savedOK = fileExists(path)
-    state = "done"
-    drawConfirm()
-    return 0
-  end
 
-  -- ENTER = bench test: lock heading to current direction, show ILS now
-  if event == EVT_VIRTUAL_ENTER then
-    lockHeading()
-    testMode = true
-    playTone(2500, 120, 0)
-  end
-  if event == EVT_VIRTUAL_INC then slope = clamp(slope + 0.5, 2.0, 8.0); saveSlope() end
-  if event == EVT_VIRTUAL_DEC then slope = clamp(slope - 0.5, 2.0, 8.0); saveSlope() end
+  -- ---- background tracking: runs every frame in every state so home
+  -- capture and logging start immediately, exactly as before, regardless of
+  -- how long you spend on the setup screens below ----
 
-  -- auto home capture at first valid GPS fix
   if not homeSet then
     local lat, lon = getGPS()
     if lat ~= nil then
@@ -197,18 +286,88 @@ local function run(event)
     end
   end
 
-  -- flight heading lock from into-wind climb-out (skipped once test mode set it)
-  if homeSet and not headingSet and (getValue("GSpd") or 0) > MOVE_KMH then
-    lockHeading()
-    playTone(2000, 120, 0)
+  if state == "run" and flightMode == "auto" and homeSet and not headingSet then
+    local gspd = getValue("GSpd") or 0
+    if gspd > MOVE_KMH then
+      if moveAboveSinceMs == nil then
+        moveAboveSinceMs = nowMs()
+        hdgSamples = {}
+      end
+      table.insert(hdgSamples, getValue("Hdg") or 0)
+      if nowMs() - moveAboveSinceMs >= MOVE_DEBOUNCE_MS then
+        lockHeading(hdgSamples)
+        playTone(2000, 120, 0)
+      end
+    else
+      moveAboveSinceMs = nil
+    end
   end
 
   local dist, cross, vdev, h, tgt
-  if headingSet then dist, cross, vdev, h, tgt = solve() end
+  if homeSet and headingSet then dist, cross, vdev, h, tgt = solve() end
 
   local t = nowMs()
   if t - lastLog >= LOG_MS then logRow(dist, cross, vdev, h, tgt); lastLog = t end
   if t - lastFlush > 1000 then flush(); lastFlush = t end
+
+  -- ---- setup screens ----
+  if state == "mode" then
+    if event == EVT_VIRTUAL_INC or event == EVT_VIRTUAL_DEC then
+      flightMode = (flightMode == "auto") and "manual" or "auto"
+    end
+    if event == EVT_VIRTUAL_ENTER then
+      if flightMode == "manual" then
+        loadManualHeading()
+        state = "heading"
+      else
+        state = "run"
+      end
+    end
+    if event == EVT_VIRTUAL_EXIT then
+      flush()
+      savedOK = fileExists(path)
+      state = "done"
+      drawConfirm()
+      return 0
+    end
+    drawModeSelect()
+    return 0
+  end
+
+  if state == "heading" then
+    if event == EVT_VIRTUAL_INC then manualHeadingDeg = (manualHeadingDeg + HEADING_STEP) % 360 end
+    if event == EVT_VIRTUAL_DEC then manualHeadingDeg = (manualHeadingDeg - HEADING_STEP + 360) % 360 end
+    if event == EVT_VIRTUAL_EXIT then state = "mode"; return 0 end
+    if event == EVT_VIRTUAL_ENTER then
+      saveManualHeading()
+      thHdgRad = rad(manualHeadingDeg)
+      headingSet = true
+      state = "run"
+    end
+    drawHeadingSelect()
+    return 0
+  end
+
+  -- ---- state == "run": flight screen ----
+  if event == EVT_VIRTUAL_EXIT then
+    flush()
+    savedOK = fileExists(path)
+    state = "done"
+    drawConfirm()
+    return 0
+  end
+
+  -- ENTER = bench test, automatic mode only: lock heading to current
+  -- direction and show ILS now. In manual mode heading is already fixed, so
+  -- ENTER does nothing here -- it can't silently override your dialed-in
+  -- runway heading.
+  if event == EVT_VIRTUAL_ENTER and flightMode == "auto" then
+    lockHeading()
+    testMode = true
+    playTone(2500, 120, 0)
+  end
+  if event == EVT_VIRTUAL_INC then slope = clamp(slope + 0.5, 2.0, 8.0); saveSlope() end
+  if event == EVT_VIRTUAL_DEC then slope = clamp(slope - 0.5, 2.0, 8.0); saveSlope() end
 
   lcd.clear(BLACK)
   lcd.drawText(2, 2, string.format("GlideSlope %.1fdeg  wheel=adj", slope), SMLSIZE + WHITE)

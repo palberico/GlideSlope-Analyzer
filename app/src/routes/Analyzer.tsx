@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { useFlights } from '../hooks/useFlights';
 import { Header } from '../components/Header';
@@ -7,11 +7,19 @@ import { SavedFlightsModal } from '../components/SavedFlightsModal';
 import { DropZone } from '../components/DropZone';
 import { SummaryStrip } from '../components/SummaryStrip';
 import { ProfileChart } from '../components/ProfileChart';
-import { PlanChart } from '../components/PlanChart';
+import { LocalizerMap } from '../components/LocalizerMap';
 import { DevChart } from '../components/DevChart';
 import { CDIReplay } from '../components/CDIReplay';
 import { StatsPanel } from '../components/StatsPanel';
-import { parseCSV, validRows, deriveSlope, detectApproaches, type Row, type Segment } from '../lib/csv';
+import {
+  parseCSV,
+  validRows,
+  deriveSlope,
+  deriveHome,
+  detectApproaches,
+  type Row,
+  type Segment,
+} from '../lib/csv';
 
 const MAX_CSV_BYTES = 900000;
 
@@ -29,6 +37,7 @@ export function Analyzer() {
   const [savedFlightsOpen, setSavedFlightsOpen] = useState(false);
 
   const hasData = rows.length > 0;
+  const home = useMemo(() => deriveHome(rows), [rows]);
 
   function load(text: string, name: string) {
     const parsed = parseCSV(text);
@@ -90,11 +99,12 @@ export function Analyzer() {
     }
   }
 
-  const currentSegment: Segment | null = !hasData
-    ? null
-    : selectedIndex === 'all'
-      ? { rows: validRows(rows) }
-      : approaches[selectedIndex];
+  // Memoized so chart/map components keyed on `segment` (identity) don't treat
+  // an unrelated re-render (e.g. the save-button label ticking back) as new data.
+  const currentSegment: Segment | null = useMemo(() => {
+    if (!hasData) return null;
+    return selectedIndex === 'all' ? { rows: validRows(rows) } : approaches[selectedIndex];
+  }, [hasData, selectedIndex, rows, approaches]);
 
   const durationSec = hasData ? (rows[rows.length - 1].ms! - rows[0].ms!) / 1000 : 0;
 
@@ -187,8 +197,11 @@ export function Analyzer() {
               <div className="row2">
                 <div className="card">
                   <h3>Localizer — top down</h3>
-                  <p className="note">Ground track vs the extended centerline. Target at bottom.</p>
-                  <PlanChart segment={currentSegment} />
+                  <p className="note">
+                    Ground track vs the extended centerline, on an OpenStreetMap basemap centered
+                    on home. North is up.
+                  </p>
+                  <LocalizerMap segment={currentSegment} home={home} />
                 </div>
                 <div className="card">
                   <h3>Deviation to go</h3>

@@ -7,6 +7,10 @@ export interface Row {
   tgt: number | null;
   hdgset: number;
   gspd: number | null;
+  lat: number | null;
+  lon: number | null;
+  hdg: number | null;
+  home: number;
 }
 
 export interface Segment {
@@ -46,6 +50,10 @@ export function parseCSV(text: string): Row[] {
       tgt: num('tgt'),
       hdgset: 'hdgset' in idx ? parseInt(c[idx.hdgset] || '0', 10) : 1,
       gspd: 'gspd' in idx ? num('gspd') : null,
+      lat: 'lat' in idx ? num('lat') : null,
+      lon: 'lon' in idx ? num('lon') : null,
+      hdg: 'hdg' in idx ? num('hdg') : null,
+      home: 'home' in idx ? parseInt(c[idx.home] || '0', 10) : 0,
     });
   }
   return rows;
@@ -65,6 +73,33 @@ export function deriveSlope(rows: Row[]): number {
   if (!a.length) return 3;
   a.sort((x, y) => x - y);
   return a[Math.floor(a.length / 2)];
+}
+
+export interface HomeRef {
+  lat: number;
+  lon: number;
+  /** Locked centerline heading, in radians. Null if the log never locked a heading. */
+  headingRad: number | null;
+}
+
+/**
+ * Recovers the home position and locked centerline heading straight from the raw
+ * log, using the same instants glideslope.lua itself captured them: home is the
+ * GPS fix on the first row with `home===1` (the row logged right after the script
+ * grabbed that reading as its origin), and the heading is the `hdg` sensor reading
+ * on the first row with `hdgset===1` (logged right after lockHeading() ran). This
+ * mirrors the script's own thLat/thLon/thHdgRad exactly rather than re-deriving
+ * them by fitting the dist/cross columns, which the log never stores directly.
+ */
+export function deriveHome(rows: Row[]): HomeRef | null {
+  const homeRow = rows.find((r) => r.home === 1 && r.lat !== null && r.lon !== null);
+  if (!homeRow) return null;
+  const hdgRow = rows.find((r) => r.hdgset === 1 && r.hdg !== null);
+  return {
+    lat: homeRow.lat!,
+    lon: homeRow.lon!,
+    headingRad: hdgRow ? (hdgRow.hdg! * Math.PI) / 180 : null,
+  };
 }
 
 /** split a flight into approaches: segments that descend toward a dist minimum */
