@@ -10,3 +10,5 @@ secrets/
 .firebaserc
 .firebase/
 firebase-debug.log*
+
+assets/ 

@@ -23,8 +23,9 @@ by Firebase Auth automatically.
 ## Deployment
 
 Pushing to `main` runs `.github/workflows/deploy.yml`, which builds this app
-and publishes `dist/` to GitHub Pages at `https://<username>.github.io/Glide`.
-The Firebase config is injected at build time from repo secrets
+and publishes `dist/` to GitHub Pages at
+`https://palberico.github.io/GlideSlope-Analyzer/`. The Firebase config is
+injected at build time from repo secrets
 (`VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, etc. — see the workflow
 file for the full list). Add your GitHub Pages domain under Firebase Console →
 Authentication → Settings → Authorized domains.
